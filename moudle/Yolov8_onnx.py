@@ -6,7 +6,7 @@ import onnxruntime as ort
 class YOLOv8:
     """YOLOv8 object detection model class for handling inference and visualization."""
 
-    def __init__(self, onnx_model,  yaml_file, confidence_thres=0.3, iou_thres=0.45):
+    def __init__(self, onnx_model,  yaml_file, confidence_thres=0.3, iou_thres=0.45, debug=False):
         """
         Initializes an instance of the YOLOv8 class.
 
@@ -30,7 +30,7 @@ class YOLOv8:
             with open(yaml_file) as f:
                 self.classes = yaml.safe_load(f)["names"]
 
-        print("Loaded class names:", self.classes)
+        # print("Loaded class names:", self.classes)
 
         # Generate a color palette for the classes
         self.color_palette = np.random.uniform(
@@ -40,7 +40,7 @@ class YOLOv8:
         self.new_pad = (0, 0)
         self.padding = (0, 0, 0, 0)  # top, left, bottom, right
         self.inimage = 0
-        self.debug = False
+        self.debug = debug
 
     def letterbox(self, img, new_shape):
         """Resizes and reshapes images while maintaining aspect ratio by adding padding, suitable for YOLO models."""
@@ -65,7 +65,10 @@ class YOLOv8:
             img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
         self.padding = (top, left, bottom, right)
         self.inimage = img
-
+        if self.debug:
+            print(f"Letterbox resize: original shape={shape}, new shape={new_shape}, resized shape={self.new_pad}, padding={self.padding}, ratio={self.ratio}")
+            cv2.namedWindow("Letterbox Image", cv2.WINDOW_NORMAL)
+            cv2.imshow("Letterbox Image", img)
         return img
 
     def draw_detections(self, img, box, score, class_id,extra_text: str = ""):
@@ -128,28 +131,75 @@ class YOLOv8:
         cv2.putText(img, label, (int(label_x), int(label_y)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1, cv2.LINE_AA)
 
-    def scale_bbox(self, bbox, old_size, new_size):
-        """將邊界框從調整大小的圖像比例縮放回原始圖像比例"""
-        top, left, _, _ = self.padding
-        # ⚠️ 注意 old_size/new_size 的順序 (height, width)
-        scale_x = old_size[1] / new_size[1]
-        scale_y = old_size[0] / new_size[0]
-        scale = min(new_size[0] / old_size[0], new_size[1] / old_size[1])
+    def scale_bbox(self, bbox, img_shape):
+        """將邊界框從調整大小的圖像比例縮放回原始圖像比例
+        Args:
+            bbox: 單一邊界框 [x, y, w, h]
+            img_shape: 原始圖像形狀 (height, width)
+        Returns:
+            縮放後的邊界框 [x, y, w, h]
+        """
+        top, left, bottom, right = self.padding
 
         bbox_before = bbox.copy()
-        bbox[0] = (bbox[0] - left) / scale
-        bbox[1] = (bbox[1] - top) / scale
-        bbox[2] = bbox[2] / scale
-        bbox[3] = bbox[3] / scale
+        bbox[0] = (bbox[0] - left) / self.ratio
+        bbox[1] = (bbox[1] - top) / self.ratio
+        bbox[2] = bbox[2] / self.ratio
+        bbox[3] = bbox[3] / self.ratio
+        # check bbox range
+        bbox[0] = np.clip(bbox[0], 0, img_shape[1] - 10)
+        bbox[1] = np.clip(bbox[1], 0, img_shape[0] - 10)
+        if bbox[0] + bbox[2] > img_shape[1]:
+            bbox[2] = img_shape[1] - bbox[0]
+        if bbox[1] + bbox[3] > img_shape[0]:
+            bbox[3] = img_shape[0] - bbox[1]
 
         # debug information
         if self.debug:
-            print(f"old_size={old_size}, new_size={new_size}")
-            print(f"padding: top={top}, left={left}")
-            print(f"scale_x={scale_x:.3f}, scale_y={scale_y:.3f}")
+            print(f"padding: top={top}, left={left}, ")
+            print(f"ratio={self.ratio}")
             print(f"bbox before={bbox_before}, after={bbox}")
-
         return bbox
+
+    def batch_sacle_bbox(self, bboxes, img_shape):
+        """將邊界框從調整大小的圖像比例縮放回原始圖像比例
+        
+        Args:
+            bboxes: 多個邊界框 [[x, y, w, h], ...]
+            img_shape: 原始圖像形狀 (height, width)
+            Returns:
+            縮放後的邊界框 [[x, y, w, h], ...]
+        """
+        top, left, bottom, right = self.padding
+
+        bboxes[:, 0] = (bboxes[:, 0] - left) / self.ratio
+        bboxes[:, 1] = (bboxes[:, 1] - top) / self.ratio
+        bboxes[:, 2] = bboxes[:, 2] / self.ratio
+        bboxes[:, 3] = bboxes[:, 3] / self.ratio
+        # check bbox range
+        bboxes[:, 0] = np.clip(bboxes[:, 0], 0, None)
+        bboxes[:, 1] = np.clip(bboxes[:, 1], 0, None)
+        # clip width
+        bboxes[:, 2] = np.minimum(
+            bboxes[:, 2],
+            img_shape[1] - bboxes[:, 0]
+        )
+
+        # clip height
+        bboxes[:, 3] = np.minimum(
+            bboxes[:, 3],
+            img_shape[0] - bboxes[:, 1]
+        )
+        
+        if self.debug:
+            print(f"box batch shape before scaling: {bboxes.shape}")
+            for i in range(bboxes.shape[0]):
+                print(f"box [{i}] shape : {bboxes[i].shape}")
+                print(f"[{i}] padding: top={top}, left={left}, bottom={bottom}, right={right}")
+                print(f"[{i}] ratio={self.ratio}")
+                print(f"[{i}] bbox after={bboxes[i]}")
+        return bboxes
+        
 
     def nms_np(self, boxes, scores, iou_thres):
         """純 NumPy NMS"""
@@ -300,25 +350,29 @@ class YOLOv8:
         
         batch_results = self.batch_nms(
             outputs, self.confidence_thres, self.iou_thres)
+
         box_data = []
         for boxes, scores, class_ids in batch_results:
             for i in range(len(boxes)):
-                if self.debug:
-                    print("bbox:{}".format(boxes[i]))
                 box = boxes[i]
                 score = scores[i]
                 class_id = class_ids[i]
                 if self.debug:
-                    print("boxes:{},scores:{},class_ids:{}".format(
-                    box, score, class_id))
-                self.draw_detections(self.inimage, box, score, class_id)
+                    # check NMS draw detections
+                    self.draw_detections(self.inimage, box, score, class_id)
+                    cv2.namedWindow("Debug NMS Image", cv2.WINDOW_NORMAL)
+                    cv2.imshow("Debug NMS Image", self.inimage)
 
-                result = self.scale_bbox(
-                    box, img.shape, (self.in_width, self.in_height))
-                if self.debug:
-                    print("rescaled boxes:{}".format(result))
-                # self.draw_detections(img, result, score, class_id)
+                result = self.scale_bbox(box, img.shape)
                 box_data.append([result, score, class_id])
+
+        if self.debug:
+            # final box data
+            for box_info in box_data:
+                cv2.circle(self.inimage, (int(box_info[0][0]), int(box_info[0][1])), 10, (0, 0, 255), -1)
+                print("Final box data: {}".format(box_info))
+                cv2.namedWindow("Debug scale Image", cv2.WINDOW_NORMAL)
+                cv2.imshow("Debug scale Image", self.inimage)
         return box_data
         # return self.inimage, img, box_data
 

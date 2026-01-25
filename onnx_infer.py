@@ -77,35 +77,40 @@ def parse_arguments():
                         default=0.5, help="NMS IoU threshold")
     parser.add_argument("--show", type=bool,
                         default=False, help="show image switch")
+    parser.add_argument('--debug', type=bool, default=False, help='Debug mode switch.')
     return parser.parse_args()
 
 if __name__ == "__main__":
 
     arge = parse_arguments()
+    debug_mode = arge.debug
     # init onnx detector
-    onnx_detector = YOLOv8(onnx_model=arge.model,yaml_file=arge.cfg,confidence_thres=arge.conf_thres,iou_thres=arge.iou_thres)
+    onnx_detector = YOLOv8(onnx_model=arge.model,yaml_file=arge.cfg,confidence_thres=arge.conf_thres,iou_thres=arge.iou_thres, debug=arge.debug)
     # get file list
     source_list = get_source_file(arge.source)
 
     for source in source_list:
         if source.suffix.lower() in img_formats:
-            print(f"Processing Image: {source}")
             img_media = cv2.imread(source)
+            if debug_mode:
+                print("image shape:{}".format(img_media.shape))
             img_media_copy = img_media
             results = onnx_detector.detect(img_media)
-            # print("result:{}".format(results))
+            if debug_mode:
+                print("result:{}".format(results))
+                print("number of detections:{}".format(len(results)))
             for result in results:
-                print("result:{}".format(result))
                 box,conf,cls = result
                 x,y,w,h = box
-                print("box:{},conf:{},cls:{}".format(box,conf,cls))
-                print("x:{},y:{},w:{},h:{}".format(x,y,w,h))
+                if debug_mode:
+                    print("box:{},conf:{},cls:{}".format(box,conf,cls))
+                    print("x:{},y:{},w:{},h:{}".format(x,y,w,h))
                 
-            if arge.show:
-                onnx_detector.draw_detections(img_media_copy,box,conf,cls)
-                cv2.namedWindow("result",cv2.WINDOW_NORMAL)
-                cv2.imshow("result",img_media_copy)
-                cv2.waitKey(0)
+                if arge.show:
+                    onnx_detector.draw_detections(img_media_copy,box,conf,cls)
+                    cv2.namedWindow("result",cv2.WINDOW_NORMAL)
+                    cv2.imshow("result",img_media_copy)
+            cv2.waitKey(0)
 
         else:
             print(f"Processing Video: {source}")
@@ -128,7 +133,7 @@ if __name__ == "__main__":
                 for result in results:
                     box,conf,cls = result
                     x,y,w,h = box
-                    print("box:{},conf:{},cls:{}".format(box,conf,cls))
+                    # print("box:{},conf:{},cls:{}".format(box,conf,cls))
                 
                 if arge.show:
                     onnx_detector.draw_detections(frame,box,conf,cls)
